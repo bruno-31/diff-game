@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pylab as plt
+from sklearn.neighbors import NearestNeighbors
 
 def grid_x(X):
     # [-1, 1] -> [0,255]
@@ -43,7 +44,14 @@ def get_getter(ema):
         ema_var = ema.average(var)
         return ema_var if ema_var else var
     return ema_getter
-    
+
+def nn_l2_mean(x,y, n_neighbors=3):
+    '''
+    x: samples of the reference density, y: samples approximated distribution
+    '''
+    nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm='ball_tree').fit(x)
+    distances, _ = nbrs.kneighbors(y)
+    return np.mean(np.square(distances))
     
     
     ##########################3 nn.py 
