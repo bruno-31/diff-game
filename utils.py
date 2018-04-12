@@ -47,7 +47,7 @@ def get_getter(ema):
 
 def nn_l2_mean(x,y, n_neighbors=3):
     '''
-    x: samples of the reference density, y: samples approximated distribution
+    y: samples of the reference density, x: samples approximated distribution
     '''
     nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm='ball_tree').fit(x)
     distances, _ = nbrs.kneighbors(y)
