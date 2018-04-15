@@ -86,13 +86,39 @@ class OptimisticAdamOptimizer(optimizer.Optimizer):
         v_t_hat = tf.div(v_t, 1. - beta2_t)
         m_t_hat = tf.div(m_t, 1. - beta1_t)
 
-        g_t = tf.div(m_t, tf.sqrt(v_t) + eps)
+        g_t = tf.div(m_t_hat, tf.sqrt(v_t_hat) + eps)
         g_t_1 = self.get_slot(var, "g")
         g_t = g_t_1.assign(g_t)
 
         var_update = state_ops.assign_sub(var,
                                           2. * lr_t * g_t - lr_t * g_t_1)  # Adam would be lr_t * g_t
         return control_flow_ops.group(*[var_update, m_t, v_t, g_t])
+
+    def _apply_sparse(self, grad, var):
+        raise NotImplementedError("Sparse gradient updates are not supported.")
+
+class RegularizeGradientDescentOptimizer(optimizer.Optimizer):
+    def __init__(self, learning_rate=0.001, lambd=0.5, use_locking=False, name="RGD"):
+        super(RegularizeGradientDescentOptimizer, self).__init__(use_locking,
+                                                               name)
+        self._lr = learning_rate
+        self._lambda = lambd
+        # Tensor versions of the constructor arguments, created in _prepare().
+        self._lr_t = None
+        self._lambda_t = None
+
+    def _prepare(self):
+        self._lr_t = ops.convert_to_tensor(self._lr, name="learning_rate")
+        self._lambda_t = ops.convert_to_tensor(self._lambda, name="lambda")
+
+    def _apply_dense(self, grad, var):
+        lr_t = math_ops.cast(self._lr_t, var.dtype.base_dtype)
+        lambda_t = math_ops.cast(self._lambda_t, var.dtype.base_dtype)
+
+        g_t = grad
+        var_update = state_ops.assign_sub(var,
+                                          lr_t * (g_t - lambda_t * var) )
+        return control_flow_ops.group(*[var_update])
 
     def _apply_sparse(self, grad, var):
         raise NotImplementedError("Sparse gradient updates are not supported.")
