@@ -1,0 +1,436 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Populating the interactive namespace from numpy and matplotlib\n"
+     ]
+    },
+    {
+     "ename": "ImportError",
+     "evalue": "No module named 'universal_divergence'",
+     "output_type": "error",
+     "traceback": [
+      "\u001b[0;31m---------------------------------------------------------------------------\u001b[0m",
+      "\u001b[0;31mImportError\u001b[0m                               Traceback (most recent call last)",
+      "\u001b[0;32m<ipython-input-1-4e571d7e9630>\u001b[0m in \u001b[0;36m<module>\u001b[0;34m()\u001b[0m\n\u001b[1;32m      9\u001b[0m \u001b[0mslim\u001b[0m \u001b[0;34m=\u001b[0m \u001b[0mtf\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcontrib\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mslim\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     10\u001b[0m \u001b[0mds\u001b[0m \u001b[0;34m=\u001b[0m \u001b[0mtf\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcontrib\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mdistributions\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m---> 11\u001b[0;31m \u001b[0;32mfrom\u001b[0m \u001b[0muniversal_divergence\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mestimate\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m     12\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mutils\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mnn_l2_mean\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     13\u001b[0m \u001b[0;34m\u001b[0m\u001b[0m\n",
+      "\u001b[0;31mImportError\u001b[0m: No module named 'universal_divergence'"
+     ]
+    }
+   ],
+   "source": [
+    "% pylab inline\n",
+    "import tensorflow as tf\n",
+    "import numpy as np\n",
+    "# import matplotlib.pyplot as plt\n",
+    "from tqdm import tqdm\n",
+    "from tensorflow.contrib.kfac.python.ops.utils import fwd_gradients\n",
+    "import seaborn as sns\n",
+    "\n",
+    "slim = tf.contrib.slim\n",
+    "ds = tf.contrib.distributions\n",
+    "from universal_divergence import estimate\n",
+    "from utils import nn_l2_mean\n",
+    "\n",
+    "from functools import reduce\n",
+    "from operator import mul\n",
+    "\n",
+    "\n",
+    "import os\n",
+    "os.environ[\"CUDA_VISIBLE_DEVICES\"]=\"0\""
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "\n",
+    "### Generator and discriminator architectures\n",
+    "\n",
+    "(same architecture as proposed in google brain paper)\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "def generator(z, output_dim=2, n_hidden=384, n_layer=6):\n",
+    "    with tf.variable_scope(\"generator\"):\n",
+    "        h = slim.stack(z, slim.fully_connected, [n_hidden] * n_layer, activation_fn=tf.nn.relu)\n",
+    "        x = slim.fully_connected(h, output_dim, activation_fn=None)\n",
+    "    return x\n",
+    "\n",
+    "def discriminator(x, n_hidden=384, n_layer=6, reuse=False):\n",
+    "    with tf.variable_scope(\"discriminator\", reuse=reuse):\n",
+    "        h = slim.stack(x, slim.fully_connected, [n_hidden] * n_layer, activation_fn=tf.nn.relu)\n",
+    "        log_d = slim.fully_connected(h, 1, activation_fn=None)\n",
+    "    return log_d"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### Data creation"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "def sample_mog(batch_size, n_mixture=16, std=0.2):\n",
+    "    x = np.linspace(-4.5,4.5,4)\n",
+    "    xs, ys = np.meshgrid(x, x)\n",
+    "    xs, ys = xs.flatten(), ys.flatten()\n",
+    "    cat = ds.Categorical(tf.zeros(n_mixture))\n",
+    "    comps = [ds.MultivariateNormalDiag([xi, yi], [std, std]) for xi, yi in zip(xs.ravel(), ys.ravel())]\n",
+    "    data = ds.Mixture(cat, comps)\n",
+    "    return data.sample(batch_size)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### Hyperparam"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "params = dict(\n",
+    "    batch_size=512,\n",
+    "    disc_learning_rate=9e-5,\n",
+    "    gen_learning_rate=9e-5,\n",
+    "    beta1=0.5,\n",
+    "    epsilon=1e-8,\n",
+    "    max_iter=8000,\n",
+    "    viz_every=500,\n",
+    "    z_dim=256,\n",
+    "    x_dim=2,\n",
+    "    optimizer='sga', # rmsprop sgd sga\n",
+    "    alignement=True\n",
+    ")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Function for Symplectic gradient adjustment"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "def jac_vec(ys,xs,vs):\n",
+    "    return fwd_gradients(ys,xs,grad_xs=vs, stop_gradients=xs)\n",
+    "\n",
+    "def jac_tran_vec(ys,xs,vs):\n",
+    "    dydxs = tf.gradients(ys,xs,grad_ys=vs, stop_gradients=xs)\n",
+    "    return [tf.zeros_like(x) if dydx is None else dydx for (x,dydx) in zip(xs,dydxs)]\n",
+    "\n",
+    "def get_sym_adj(Ls,xs):\n",
+    "    xi= [tf.gradients(l,x)[0]for(l,x)in zip(Ls,xs)]\n",
+    "    H_xi = jac_vec(xi,xs,xi)\n",
+    "    Ht_xi = jac_tran_vec(xi,xs,xi)\n",
+    "    At_xi =[(ht-h)/2 for (h,ht) in zip(H_xi,Ht_xi)]\n",
+    "    return At_xi"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Construct model and training ops"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "scrolled": false
+   },
+   "outputs": [],
+   "source": [
+    "tf.reset_default_graph()\n",
+    "\n",
+    "data = sample_mog(params['batch_size'])\n",
+    "noise = ds.Normal(tf.zeros(params['z_dim']), tf.ones(params['z_dim'])).sample(params['batch_size'])\n",
+    "\n",
+    "# Construct generator and discriminator nets\n",
+    "with slim.arg_scope([slim.fully_connected], weights_initializer=tf.orthogonal_initializer(gain=1.2)):\n",
+    "    samples = generator(noise, output_dim=params['x_dim'])\n",
+    "    real_score = discriminator(data)\n",
+    "    fake_score = discriminator(samples, reuse=True)\n",
+    "    \n",
+    "# Saddle objective    \n",
+    "loss = tf.reduce_mean(\n",
+    "    tf.nn.sigmoid_cross_entropy_with_logits(logits=real_score, labels=tf.ones_like(real_score)) +\n",
+    "    tf.nn.sigmoid_cross_entropy_with_logits(logits=fake_score, labels=tf.zeros_like(fake_score)))\n",
+    "\n",
+    "gen_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, \"generator\")\n",
+    "disc_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, \"discriminator\")\n",
+    "\n",
+    "if params['optimizer'] == 'rmsprop':\n",
+    "    g_train_opt = tf.train.RMSPropOptimizer(params['gen_learning_rate'])\n",
+    "    d_train_opt = tf.train.RMSPropOptimizer(params['disc_learning_rate'])\n",
+    "    d_train_op = d_train_opt.minimize(loss, var_list=disc_vars)\n",
+    "    g_train_op = g_train_opt.minimize(-loss, var_list=gen_vars)\n",
+    "    train_op = tf.group([d_train_op, g_train_op])\n",
+    "\n",
+    "    \n",
+    "elif params['optimizer'] == 'sga': \n",
+    "    print('sga enabled ...')\n",
+    "    d_opt = tf.train.RMSPropOptimizer(learning_rate=params['disc_learning_rate'])\n",
+    "    g_opt = tf.train.RMSPropOptimizer(learning_rate=params['gen_learning_rate'])\n",
+    "\n",
+    "    dvs = d_opt.compute_gradients(loss, var_list=disc_vars)\n",
+    "    gvs = g_opt.compute_gradients(-loss, var_list=gen_vars)\n",
+    "\n",
+    "    adj = get_sym_adj([loss]*len(disc_vars) + [-loss]*len(gen_vars),disc_vars+gen_vars)\n",
+    "    d_adj= adj[:len(disc_vars)]\n",
+    "    g_adj = adj[-len(gen_vars)::]\n",
+    "    \n",
+    "    dvs_sga = [(grad + adj , var) for (grad,var),adj in zip(dvs,d_adj)]\n",
+    "    gvs_sga = [(grad + adj , var) for (grad,var),adj in zip(gvs,g_adj)]\n",
+    "    \n",
+    "    d_train_op = d_opt.apply_gradients(dvs_sga)\n",
+    "    g_train_op = g_opt.apply_gradients(gvs_sga)\n",
+    "    train_op = tf.group([d_train_op, g_train_op])\n",
+    "\n",
+    "elif params['optimizer'] == 'sga_align':\n",
+    "    print('sga align ...')\n",
+    "    epsilon = 1/10\n",
+    "    optimizer = tf.train.RMSPropOptimizer(learning_rate=params['gen_learning_rate'])\n",
+    "\n",
+    "    d_grads = tf.gradients(loss, disc_vars)\n",
+    "    g_grads = tf.gradients(-loss, gen_vars)\n",
+    "    grads = d_grads + g_grads\n",
+    "    variables = disc_vars + gen_vars\n",
+    "\n",
+    "    at_xi = get_sym_adj([loss]*len(disc_vars) + [-loss]*len(gen_vars),disc_vars+gen_vars)\n",
+    "\n",
+    "    ######### alignment ##########\n",
+    "    reg = 0.5 * sum(tf.reduce_sum(tf.square(g)) for g in grads)\n",
+    "    nabla_h = tf.gradients(reg, variables)\n",
+    "    p_scal_1 = sum([tf.reduce_sum(tf.multiply(xi,h)) for (xi,h) in zip(grads,nabla_h)])   \n",
+    "    p_scal_2 = sum([tf.reduce_sum(tf.multiply(at_xi,h)) for (at_xi,h) in zip(at_xi,nabla_h)])\n",
+    "\n",
+    "    d = sum([reduce(mul,x.get_shape().as_list()) for x in variables]) # multiply dim arrays and sum to get nb of parameters\n",
+    "\n",
+    "    _lambda = tf.sign((1/d) * p_scal_1 * p_scal_2 + epsilon)\n",
+    "#     _lambda = tf.constant(1.)\n",
+    "    apply_vec = [(grad + _lambda * _at_xi, w) for (grad,_at_xi,w) in zip(grads, at_xi, variables)]\n",
+    "\n",
+    "    #         with tf.control_dependencies([g for (g, v) in apply_vec]):\n",
+    "    train_op = optimizer.apply_gradients(apply_vec)    \n",
+    "else:\n",
+    "    raise NotImplementedError\n",
+    "    "
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Train"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "# config = tf.ConfigProto(device_count={'GPU': 0})\n",
+    "# config.gpu_options.allow_growth = True\n",
+    "\n",
+    "sess = tf.InteractiveSession()\n",
+    "sess.run(tf.global_variables_initializer())"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "xmax = 3\n",
+    "fs = []\n",
+    "frames = []\n",
+    "np_samples = []\n",
+    "n_batches_viz = 10\n",
+    "viz_every = params['viz_every']\n",
+    "\n",
+    "nn_every = 200\n",
+    "y_ref = sess.run( data)\n",
+    "nn_dist = []\n",
+    "nn_kl =[]\n",
+    "for i in tqdm(range(params['max_iter']+1)):\n",
+    "    f, _ = sess.run([[loss], train_op])\n",
+    "    fs.append(f)\n",
+    "    if (i) % viz_every == 0:\n",
+    "        np_samples.append(np.vstack([sess.run(samples) for _ in range(n_batches_viz)]))\n",
+    "        xx, yy = sess.run([samples, data])\n",
+    "        fig = figure(figsize=(5,5))\n",
+    "        scatter(xx[:, 0], xx[:, 1], edgecolor='none',s=10)\n",
+    "        scatter(yy[:, 0], yy[:, 1], c='g', edgecolor='none',s=10)\n",
+    "        axis('off')\n",
+    "        show()\n",
+    "        \n",
+    "#     if (i) % nn_every == 0:\n",
+    "#         x = np.vstack([sess.run(samples) for _ in range(n_batches_viz)])\n",
+    "#         l2nn = nn_l2_mean(x,y_ref)\n",
+    "#         kl =estimate(x, y_ref,k=1)\n",
+    "#         nn_dist.append(l2nn)\n",
+    "#         nn_kl.append(kl)    "
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "np_samples_ = np_samples[::1]\n",
+    "cols = len(np_samples_)\n",
+    "bg_color  = sns.color_palette('Greens', n_colors=256)[0]\n",
+    "figure(figsize=(2*cols, 2))\n",
+    "for i, samps in enumerate(np_samples_):\n",
+    "    if i == 0:\n",
+    "        ax = subplot(1,cols,1)\n",
+    "    else:\n",
+    "        subplot(1,cols,i+1, sharex=ax, sharey=ax)\n",
+    "    ax2 = sns.kdeplot(samps[:, 0], samps[:, 1], shade=True, cmap='coolwarm', n_levels=20, clip=[[-6,6]]*2,bw=.30)\n",
+    "#     ax2.set_axis_bgcolor(bg_color)\n",
+    "    xticks([]); yticks([])\n",
+    "    title('step %d'%(i*viz_every))\n",
+    "gcf().tight_layout()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "plt.semilogy(nn_dist)\n",
+    "plt.semilogy(nn_kl)\n",
+    "plt.legend(['kl','l2 nearest neigbhors'])\n",
+    "xlabel('iterations')\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "# nn_con=np.load('nndist.npy')\n",
+    "# kl_con = np.load('kldist.npy')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "# plt.semilogy(nn_dist)\n",
+    "# plt.semilogy(nn_kl)\n",
+    "# plt.semilogy(kl_con)\n",
+    "# plt.semilogy(nn_con)\n",
+    "# plt.legend(['kl SGA','l2 NN SGA','l2 NN Concensus','kl Concensus'],loc='upper right')\n",
+    "# xlabel('iterations')\n",
+    "# plt.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "np.save('plot_sgd_kl',nn_kl)\n",
+    "np.save('plot_sgd_nn',nn_dist)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": []
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "TF 1.5",
+   "language": "python",
+   "name": "diffgan"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.5.5"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 2
+}
